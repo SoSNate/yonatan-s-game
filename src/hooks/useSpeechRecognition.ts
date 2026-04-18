@@ -97,14 +97,16 @@ export function useSpeechRecognition(initialLang: Lang = 'he-IL'): SpeechHook {
       setIsListening(false);
       setInterim('');
       if (shouldListenRef.current) {
-        setTimeout(createAndStart, 150);
+        setTimeout(createAndStart, 30);
       }
     };
 
     rec.onerror = (e: SpeechRecognitionErrorEvent) => {
-      if (e.error !== 'aborted' && e.error !== 'no-speech') {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        shouldListenRef.current = false;
         console.warn('Speech error:', e.error);
       }
+      // no-speech / aborted / network → onend fires → auto-restart
     };
 
     recognitionRef.current = rec;
