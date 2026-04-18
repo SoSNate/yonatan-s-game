@@ -273,7 +273,7 @@ export function AirHockey() {
       const dx = p.x - pl.x, dy = p.y - pl.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
       const minD = p.radius + pl.radius;
-      if (dist < minD && dist > 0.001) {
+      if (dist < minD && dist > 0.001 && p.isHittable) {
         const nx = dx / dist, ny = dy / dist;
         p.x = pl.x + nx * minD;
         p.y = pl.y + ny * minD;
