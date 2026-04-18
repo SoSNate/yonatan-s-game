@@ -1,452 +1,423 @@
-import { useRef, useState, useEffect, useCallback } from 'react';
-import { Mic, MicOff, Trophy } from 'lucide-react';
-import { useSpeechRecognition } from '../../hooks/useSpeechRecognition';
-import { useLocalStorage } from '../../hooks/useLocalStorage';
-import { WORDS, shuffle } from '../../data/words';
-import type { Word } from '../../data/words';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { WORDS } from '../../data/words';
 
-// ── types ──────────────────────────────────────────────────────────────────
 interface Puck {
-  id: number;
   x: number; y: number;
   vx: number; vy: number;
   radius: number;
   color: string;
-  word: Word;
-  displayText: string;
+  isWordPuck: boolean;
+  displayWord: string;
   targetAnswers: string[];
-  targetLang: 'he-IL' | 'en-US';
-  helperLabel: string;
-  unlocked: boolean;
+  helperText: string;
+  isHittable: boolean;
 }
 
-type Phase = 'MENU' | 'PLAYING' | 'GAME_OVER';
-interface LeaderEntry { name: string; score: number; date: string; }
+interface LeaderEntry { name: string; score: number; }
 
-// ── constants ──────────────────────────────────────────────────────────────
-const W = 360, H = 580;
-const PLAYER_R = 34;
-const PUCK_R   = 38;
-const COLORS   = ['#f97316','#a855f7','#3b82f6','#ec4899','#facc15','#14b8a6'];
-let nextId = 0;
+type GameState = 'start' | 'playing' | 'gameover';
 
-// ── helpers ────────────────────────────────────────────────────────────────
-function randCol() { return COLORS[Math.floor(Math.random() * COLORS.length)]; }
-
-function makePuck(pool: Word[]): Puck {
-  const word = pool[Math.floor(Math.random() * pool.length)];
-  const useHe = Math.random() < 0.5;
-  const speed = 2.6 + Math.random() * 1.2;
-  const angle = Math.PI * 0.3 + Math.random() * Math.PI * 0.4;
-  return {
-    id: nextId++,
-    x: PUCK_R + 20 + Math.random() * (W - (PUCK_R + 20) * 2),
-    y: PUCK_R + 10,
-    vx: Math.cos(angle) * speed * (Math.random() < 0.5 ? 1 : -1),
-    vy: Math.abs(Math.sin(angle) * speed),
-    radius: PUCK_R,
-    color: randCol(),
-    word,
-    displayText: useHe ? word.he[0] : word.en,
-    targetAnswers: useHe ? [word.en] : word.he,
-    targetLang: useHe ? 'en-US' : 'he-IL',
-    helperLabel: useHe ? '!Say in English' : ':תגיד בעברית',
-    unlocked: false,
-  };
-}
-
-// ── draw ───────────────────────────────────────────────────────────────────
-function drawFrame(
-  ctx: CanvasRenderingContext2D,
-  pucks: Puck[],
-  player: { x: number; y: number },
-  frame: number
-) {
-  // bg
-  ctx.fillStyle = '#050e1f';
-  ctx.fillRect(0, 0, W, H);
-
-  // field
-  ctx.save();
-  ctx.strokeStyle = '#0f3460';
-  ctx.lineWidth = 2;
-  ctx.setLineDash([12, 8]);
-  ctx.beginPath(); ctx.moveTo(0, H / 2); ctx.lineTo(W, H / 2); ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.beginPath(); ctx.arc(W / 2, H / 2, 46, 0, Math.PI * 2); ctx.stroke();
-  // goals
-  const gw = 100;
-  ctx.beginPath(); ctx.rect((W - gw) / 2, 0, gw, 12); ctx.stroke();
-  ctx.beginPath(); ctx.rect((W - gw) / 2, H - 12, gw, 12); ctx.stroke();
-  ctx.restore();
-
-  // pucks
-  pucks.forEach(p => {
-    const col = p.unlocked ? '#4ade80' : p.color;
-    const glow = p.unlocked ? 22 + Math.sin(frame * 0.14) * 6 : 10;
-
-    ctx.save();
-    ctx.shadowBlur = glow;
-    ctx.shadowColor = col;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
-    ctx.fillStyle = col + (p.unlocked ? '55' : '33');
-    ctx.fill();
-    ctx.strokeStyle = col;
-    ctx.lineWidth = 2.5;
-    ctx.stroke();
-    ctx.restore();
-
-    // text
-    ctx.save();
-    ctx.fillStyle = p.unlocked ? '#052e16' : '#fff';
-    const fs = p.displayText.length > 9 ? 10 : p.displayText.length > 6 ? 12 : 14;
-    ctx.font = `bold ${fs}px Heebo,sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(p.displayText, p.x, p.y);
-    ctx.restore();
-  });
-
-  // player paddle
-  ctx.save();
-  ctx.shadowBlur = 22;
-  ctx.shadowColor = '#60a5fa';
-  ctx.beginPath();
-  ctx.arc(player.x, player.y, PLAYER_R, 0, Math.PI * 2);
-  ctx.fillStyle = '#1e40af66';
-  ctx.fill();
-  ctx.strokeStyle = '#60a5fa';
-  ctx.lineWidth = 3;
-  ctx.stroke();
-  ctx.restore();
-  ctx.beginPath();
-  ctx.arc(player.x, player.y, 7, 0, Math.PI * 2);
-  ctx.fillStyle = '#93c5fd';
-  ctx.fill();
-}
-
-// ── component ──────────────────────────────────────────────────────────────
 export function AirHockey() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [phase, setPhase]     = useState<Phase>('MENU');
-  const [lives, setLives]     = useState(5);
-  const [score, setScore]     = useState(0);
-  const [helperLabel, setHelperLabel] = useState('');
-  const [currentLang, setCurrentLang] = useState<'he-IL' | 'en-US'>('he-IL');
-  const [nameInput, setNameInput] = useState('');
-  const [showLeader, setShowLeader] = useState(false);
-  const [leaderboard, setLeaderboard] = useLocalStorage<LeaderEntry[]>('yonatan_hockey_scores', []);
-
-  // mutable game state — all lives in refs, NEVER setX inside RAF
-  const gameRef = useRef({
-    running: false,
-    pucks: [] as Puck[],
-    player: { x: W / 2, y: H - 80 },
-    score: 0,
-    lives: 5,
-    frame: 0,
-    speedMult: 1,
-    wordPool: shuffle([...WORDS]),
-    raf: 0,
+  const [gameState, setGameState] = useState<GameState>('start');
+  const [score, setScore] = useState(0);
+  const [lives, setLives] = useState(5);
+  const [micStatusText, setMicStatusText] = useState('🎤 מיקרופון כבוי');
+  const [isListening, setIsListening] = useState(false);
+  const [lastHeard, setLastHeard] = useState('שמעתי: ...');
+  const [playerName, setPlayerName] = useState('');
+  const [leaderboard, setLeaderboard] = useState<LeaderEntry[]>(() => {
+    try { return JSON.parse(localStorage.getItem('yonatan_hockey_scores') || '[]'); } catch { return []; }
   });
 
-  const speech = useSpeechRecognition('he-IL');
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const requestRef = useRef(0);
+  const isPlayingRef = useRef(false);
 
-  // ── pointer ──────────────────────────────────────────────────────────────
-  const toXY = useCallback((cx: number, cy: number) => {
-    const el = canvasRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    gameRef.current.player.x = ((cx - r.left)  / r.width)  * W;
-    gameRef.current.player.y = ((cy - r.top)   / r.height) * H;
-  }, []);
+  const scoreRef = useRef(0);
+  const livesRef = useRef(5);
+  const gameSpeedRef = useRef(1);
+  const pucksRef = useRef<Puck[]>([]);
+  const playerRef = useRef({ x: 0, y: 0, radius: 30, color: '#0f172a', borderColor: '#38bdf8' });
 
-  // ── unlock ────────────────────────────────────────────────────────────────
-  const unlock = useCallback((transcript: string) => {
-    const lower = transcript.toLowerCase().trim();
-    gameRef.current.pucks.forEach(p => {
-      if (p.unlocked) return;
-      if (p.targetAnswers.some(a => lower.includes(a.toLowerCase()))) {
-        p.unlocked = true;
-      }
-    });
-  }, []);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recognitionRef = useRef<any>(null);
+  const isMicPausedRef = useRef(false);
+  const currentMicLangRef = useRef<'he-IL' | 'en-US'>('he-IL');
 
-  // ── game loop (useEffect owns the RAF) ────────────────────────────────────
+  // ── mic setup ──────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (phase !== 'PLAYING') return;
-    const g = gameRef.current;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d')!;
-
-    let scoreFlush = 0;   // batch score increments
-    let livesLocal = g.lives;
-
-    function loop() {
-      if (!g.running) return;
-      g.frame++;
-      scoreFlush++;
-
-      // flush score to React every 60 frames
-      if (scoreFlush >= 60) {
-        setScore(g.score);
-        scoreFlush = 0;
-      }
-
-      // difficulty
-      if (g.frame % 400 === 0 && g.speedMult < 2.5) {
-        g.speedMult = Math.min(2.5, +(g.speedMult + 0.12).toFixed(2));
-      }
-
-      // spawn
-      if (g.pucks.length === 0) {
-        const p = makePuck(g.wordPool);
-        p.vx *= g.speedMult;
-        p.vy *= g.speedMult;
-        g.pucks.push(p);
-        setHelperLabel(p.helperLabel);
-        setCurrentLang(p.targetLang);
-        speech.switchLang(p.targetLang);
-      }
-
-      // physics
-      g.pucks = g.pucks.filter(p => {
-        p.x += p.vx;
-        p.y += p.vy;
-
-        // wall bounce
-        if (p.x - p.radius < 0)  { p.x = p.radius;      p.vx =  Math.abs(p.vx); }
-        if (p.x + p.radius > W)  { p.x = W - p.radius;  p.vx = -Math.abs(p.vx); }
-        if (p.y - p.radius < 0)  { p.y = p.radius;       p.vy =  Math.abs(p.vy); }
-
-        // goal
-        if (p.unlocked && p.y + p.radius < 0) {
-          g.score += 100;
-          return false;
-        }
-
-        // missed
-        if (p.y - p.radius > H) {
-          livesLocal--;
-          g.lives = livesLocal;
-          setLives(livesLocal);
-          if (livesLocal <= 0) {
-            g.running = false;
-            setScore(g.score);
-            speech.stop();
-            setPhase('GAME_OVER');
-          }
-          return false;
-        }
-
-        // paddle collision
-        const pl = g.player;
-        const dx = p.x - pl.x, dy = p.y - pl.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        const minD = p.radius + PLAYER_R;
-        if (dist < minD && dist > 0.001) {
-          const nx = dx / dist, ny = dy / dist;
-          p.x += nx * (minD - dist);
-          p.y += ny * (minD - dist);
-          const dot = p.vx * nx + p.vy * ny;
-          p.vx -= 2 * dot * nx;
-          p.vy -= 2 * dot * ny;
-          if (p.unlocked) p.vy = -Math.abs(p.vy) * 1.3;
-        }
-
-        return true;
-      });
-
-      g.score++;
-      drawFrame(ctx, g.pucks, g.player, g.frame);
-      g.raf = requestAnimationFrame(loop);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SpeechRecognitionClass = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognitionClass) {
+      setMicStatusText('❌ מיקרופון לא נתמך');
+      return;
     }
 
-    g.raf = requestAnimationFrame(loop);
-    return () => {
-      cancelAnimationFrame(g.raf);
+    const recognition = new SpeechRecognitionClass();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognitionRef.current = recognition;
+
+    recognition.onstart = () => {
+      const langText = currentMicLangRef.current === 'he-IL' ? 'עברית' : 'אנגלית';
+      setMicStatusText(`🎤 מקשיב... (${langText})`);
+      setIsListening(true);
+      setLastHeard('שמעתי: ...');
     };
+
+    recognition.onresult = (event: any) => {
+      if (!isPlayingRef.current || isMicPausedRef.current) return;
+      let transcript = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        transcript += event.results[i][0].transcript;
+      }
+      const clean = transcript.trim();
+      if (clean) {
+        setLastHeard(`שמעתי: "${clean}"`);
+        checkSpokenWord(clean);
+      }
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+      setMicStatusText('🎤 מיקרופון מושהה');
+      if (isPlayingRef.current && !isMicPausedRef.current) {
+        try { recognition.start(); } catch (_) {}
+      }
+    };
+
+    recognition.onerror = (e: any) => console.log('Mic error:', e.error);
+
+    return () => { recognitionRef.current?.stop(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase]);
+  }, []);
 
-  // ── start ─────────────────────────────────────────────────────────────────
+  const switchMicLanguage = useCallback((lang: 'he-IL' | 'en-US') => {
+    if (currentMicLangRef.current !== lang) {
+      currentMicLangRef.current = lang;
+      if (recognitionRef.current) {
+        recognitionRef.current.lang = lang;
+        try { recognitionRef.current.stop(); } catch (_) {}
+      }
+    }
+  }, []);
+
+  const checkSpokenWord = useCallback((spokenWord: string) => {
+    if (!isPlayingRef.current || isMicPausedRef.current) return;
+    const clean = spokenWord.replace(/[.,!?]/g, '').trim().toLowerCase();
+    let matched = false;
+    pucksRef.current.forEach(p => {
+      if (p.isWordPuck && !p.isHittable) {
+        if (p.targetAnswers.some(a => clean.includes(a.toLowerCase()))) {
+          p.isHittable = true;
+          p.color = '#4ade80';
+          matched = true;
+        }
+      }
+    });
+    if (matched) {
+      setLastHeard('✔️ מעולה!');
+      isMicPausedRef.current = true;
+      setTimeout(() => {
+        isMicPausedRef.current = false;
+        if (isPlayingRef.current) setLastHeard('שמעתי: ...');
+      }, 1000);
+    }
+  }, []);
+
+  // ── spawn ──────────────────────────────────────────────────────────────────
+  const spawnPuck = useCallback((canvas: HTMLCanvasElement) => {
+    const radius = canvas.width * 0.08;
+    const x = Math.random() * (canvas.width - radius * 2) + radius;
+    const y = radius + 20;
+    const angle = (Math.random() * 120 + 30) * (Math.PI / 180);
+    const speed = (2.5 + Math.random() * 1.5) * gameSpeedRef.current;
+
+    const wordData = WORDS[Math.floor(Math.random() * WORDS.length)];
+    const isEnToHe = Math.random() > 0.5;
+    const displayWord = isEnToHe ? wordData.en : wordData.he[0];
+    const targetAnswers = isEnToHe ? wordData.he : [wordData.en.toLowerCase()];
+    const requiredLang: 'he-IL' | 'en-US' = isEnToHe ? 'he-IL' : 'en-US';
+    const helperText = isEnToHe ? 'תגיד בעברית:' : 'Say in English:';
+
+    switchMicLanguage(requiredLang);
+
+    pucksRef.current.push({
+      x, y, radius,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      color: '#f97316',
+      isWordPuck: true,
+      displayWord, targetAnswers, helperText,
+      isHittable: false,
+    });
+  }, [switchMicLanguage]);
+
+  // ── draw ───────────────────────────────────────────────────────────────────
+  const drawCircle = (
+    ctx: CanvasRenderingContext2D,
+    x: number, y: number, radius: number,
+    fillColor: string, strokeColor?: string
+  ) => {
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fillStyle = fillColor;
+    ctx.fill();
+    if (strokeColor) { ctx.lineWidth = 4; ctx.strokeStyle = strokeColor; ctx.stroke(); }
+    ctx.closePath();
+  };
+
+  const drawFrame = useCallback((canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D) => {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // mid line
+    ctx.beginPath();
+    ctx.moveTo(0, canvas.height / 2);
+    ctx.lineTo(canvas.width, canvas.height / 2);
+    ctx.strokeStyle = 'rgba(15,23,42,0.1)';
+    ctx.lineWidth = 4;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(canvas.width / 2, canvas.height / 2, canvas.width * 0.15, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(15,23,42,0.1)';
+    ctx.lineWidth = 4;
+    ctx.stroke();
+
+    pucksRef.current.forEach(p => {
+      ctx.shadowBlur = 15;
+      ctx.shadowColor = p.color;
+      drawCircle(ctx, p.x, p.y, p.radius, p.color);
+      ctx.shadowBlur = 0;
+      drawCircle(ctx, p.x, p.y, p.radius * 0.5, 'rgba(255,255,255,0.2)');
+
+      if (p.isWordPuck) {
+        ctx.fillStyle = '#0f172a';
+        ctx.textAlign = 'center';
+        ctx.font = `bold ${p.radius * 0.25}px Heebo,sans-serif`;
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(p.helperText, p.x, p.y - 5);
+        ctx.font = `bold ${p.radius * 0.45}px Heebo,sans-serif`;
+        ctx.textBaseline = 'top';
+        ctx.fillText(p.displayWord, p.x, p.y + 5);
+      }
+    });
+
+    const pl = playerRef.current;
+    drawCircle(ctx, pl.x, pl.y, pl.radius, pl.color, pl.borderColor);
+    drawCircle(ctx, pl.x, pl.y, pl.radius * 0.4, pl.borderColor);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── physics ────────────────────────────────────────────────────────────────
+  const endGame = useCallback(() => {
+    isPlayingRef.current = false;
+    cancelAnimationFrame(requestRef.current);
+    setGameState('gameover');
+  }, []);
+
+  const updatePhysics = useCallback((canvas: HTMLCanvasElement) => {
+    scoreRef.current += 1;
+    gameSpeedRef.current = Math.min(gameSpeedRef.current + 0.0002, 2.5);
+    if (scoreRef.current % 10 === 0) setScore(Math.floor(scoreRef.current / 10));
+
+    if (pucksRef.current.length === 0) spawnPuck(canvas);
+
+    for (let i = pucksRef.current.length - 1; i >= 0; i--) {
+      const p = pucksRef.current[i];
+      p.x += p.vx;
+      p.y += p.vy;
+
+      if (p.x - p.radius <= 0)               { p.x = p.radius;              p.vx *= -1; }
+      else if (p.x + p.radius >= canvas.width) { p.x = canvas.width - p.radius; p.vx *= -1; }
+
+      if (p.y - p.radius <= 0) {
+        if (p.isHittable) {
+          pucksRef.current.splice(i, 1);
+          scoreRef.current += 1000;
+          setScore(Math.floor(scoreRef.current / 10));
+          setTimeout(() => { if (isPlayingRef.current && pucksRef.current.length === 0) spawnPuck(canvas); }, 300);
+          continue;
+        } else { p.y = p.radius; p.vy *= -1; }
+      }
+
+      if (p.y + p.radius >= canvas.height) {
+        livesRef.current -= 1;
+        setLives(livesRef.current);
+        pucksRef.current.splice(i, 1);
+        if (livesRef.current <= 0) { endGame(); }
+        else { setTimeout(() => { if (isPlayingRef.current && pucksRef.current.length === 0) spawnPuck(canvas); }, 500); }
+        continue;
+      }
+
+      const pl = playerRef.current;
+      const dx = p.x - pl.x, dy = p.y - pl.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < p.radius + pl.radius) {
+        if (!p.isHittable) continue;
+        const angle = Math.atan2(dy, dx);
+        const overlap = (p.radius + pl.radius) - dist;
+        p.x += Math.cos(angle) * overlap;
+        p.y += Math.sin(angle) * overlap;
+        const spd = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+        p.vx = Math.cos(angle) * spd * 1.05;
+        p.vy = -Math.abs(Math.sin(angle) * spd * 1.05);
+      }
+    }
+  }, [spawnPuck, endGame]);
+
+  // ── game loop ──────────────────────────────────────────────────────────────
+  const gameLoop = useCallback(() => {
+    if (!isPlayingRef.current || !canvasRef.current) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d')!;
+    updatePhysics(canvas);
+    drawFrame(canvas, ctx);
+    requestRef.current = requestAnimationFrame(gameLoop);
+  }, [updatePhysics, drawFrame]);
+
+  // ── start / end ────────────────────────────────────────────────────────────
   const startGame = useCallback(() => {
-    const g = gameRef.current;
-    g.running = true;
-    g.pucks = [];
-    g.score = 0;
-    g.lives = 5;
-    g.frame = 0;
-    g.speedMult = 1;
-    g.player = { x: W / 2, y: H - 80 };
-    g.wordPool = shuffle([...WORDS]);
-    setScore(0);
-    setLives(5);
-    setHelperLabel('');
-    setShowLeader(false);
-    setPhase('PLAYING');   // triggers the useEffect above
-    speech.start(unlock);
-  }, [speech, unlock]);
+    const canvas = canvasRef.current;
+    if (!canvas) return;
 
-  const stopGame = useCallback(() => {
-    gameRef.current.running = false;
-    cancelAnimationFrame(gameRef.current.raf);
-    speech.stop();
-  }, [speech]);
+    const size = Math.min(window.innerWidth * 0.9, window.innerHeight * 0.8, 600);
+    canvas.width = size;
+    canvas.height = size * 1.3;
+    playerRef.current.radius = canvas.width * 0.08;
+    playerRef.current.x = canvas.width / 2;
+    playerRef.current.y = canvas.height - playerRef.current.radius - 20;
 
-  useEffect(() => () => stopGame(), [stopGame]);
+    scoreRef.current = 0; livesRef.current = 5; gameSpeedRef.current = 1;
+    pucksRef.current = []; isMicPausedRef.current = false;
+    setScore(0); setLives(5); setPlayerName('');
+    setGameState('playing');
+    isPlayingRef.current = true;
+
+    try { recognitionRef.current?.start(); } catch (_) {}
+    spawnPuck(canvas);
+    requestRef.current = requestAnimationFrame(gameLoop);
+  }, [spawnPuck, gameLoop]);
+
+  // ── pointer ────────────────────────────────────────────────────────────────
+  const handlePointerMove = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    if (!isPlayingRef.current || !canvasRef.current) return;
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    const pl = playerRef.current;
+    pl.x = Math.max(pl.radius, Math.min(canvas.width - pl.radius, clientX - rect.left));
+    pl.y = Math.max(canvas.height / 2, Math.min(canvas.height - pl.radius, clientY - rect.top));
+  }, []);
+
+  useEffect(() => {
+    const prevent = (e: TouchEvent) => { if (isPlayingRef.current) e.preventDefault(); };
+    document.body.addEventListener('touchmove', prevent, { passive: false });
+    return () => document.body.removeEventListener('touchmove', prevent);
+  }, []);
+
+  useEffect(() => () => { cancelAnimationFrame(requestRef.current); recognitionRef.current?.stop(); }, []);
+
+  // ── resize handler ─────────────────────────────────────────────────────────
+  useEffect(() => {
+    const onResize = () => {
+      const canvas = canvasRef.current;
+      if (!canvas || !isPlayingRef.current) return;
+      const size = Math.min(window.innerWidth * 0.9, window.innerHeight * 0.8, 600);
+      canvas.width = size;
+      canvas.height = size * 1.3;
+      const pl = playerRef.current;
+      pl.radius = canvas.width * 0.08;
+      // keep player in lower half after resize
+      pl.x = Math.min(pl.x, canvas.width  - pl.radius);
+      pl.y = Math.max(canvas.height / 2, Math.min(canvas.height - pl.radius, pl.y));
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   // ── save score ─────────────────────────────────────────────────────────────
-  const saveScore = useCallback(() => {
-    if (!nameInput.trim()) return;
-    setLeaderboard(prev =>
-      [...prev, { name: nameInput.trim(), score: gameRef.current.score, date: new Date().toLocaleDateString('he-IL') }]
-        .sort((a, b) => b.score - a.score).slice(0, 10)
-    );
-    setNameInput('');
-    setShowLeader(true);
-  }, [nameInput, setLeaderboard]);
-
-  // ── hearts ─────────────────────────────────────────────────────────────────
-  const hearts = Array.from({ length: 5 }, (_, i) => (
-    <span key={i} className={`text-xl transition-opacity ${i < lives ? 'opacity-100' : 'opacity-20'}`}>❤️</span>
-  ));
+  const handleSaveScore = useCallback(() => {
+    const name = playerName.trim() || 'שחקן אנונימי';
+    const finalScore = Math.floor(scoreRef.current / 10);
+    const updated = [...leaderboard, { name, score: finalScore }].sort((a, b) => b.score - a.score).slice(0, 10);
+    setLeaderboard(updated);
+    localStorage.setItem('yonatan_hockey_scores', JSON.stringify(updated));
+    setGameState('start');
+  }, [playerName, leaderboard]);
 
   return (
-    <div
-      className="min-h-screen flex flex-col items-center justify-center select-none"
-      style={{ background: 'radial-gradient(ellipse at 50% 0%, #0f2a4a 0%, #050d1a 70%)' }}
-    >
-      {/* HUD */}
-      {phase === 'PLAYING' && (
-        <div className="w-full max-w-[360px] flex justify-between items-center px-2 mb-2">
-          <span className="text-white font-black text-lg tabular-nums">{score.toLocaleString()}</span>
-          <div className="flex gap-0.5">{hearts}</div>
-          <div className={`flex items-center gap-1.5 text-xs font-semibold px-2 py-1 rounded-full border transition-all ${
-            speech.isListening
-              ? 'text-emerald-400 border-emerald-500/40 bg-emerald-900/20'
-              : 'text-slate-500 border-slate-700/40'
-          }`}>
-            {speech.isListening ? <Mic size={13}/> : <MicOff size={13}/>}
-            {currentLang === 'he-IL' ? 'עברית' : 'English'}
-          </div>
-        </div>
-      )}
+    <div dir="rtl" className="flex justify-center items-center h-screen w-full bg-slate-800 text-white font-sans overflow-hidden">
+      <div className="relative shadow-2xl rounded-xl overflow-hidden bg-slate-200" style={{ width: '90vw', maxWidth: '600px', aspectRatio: '1/1.3' }}>
 
-      {/* Canvas */}
-      <div className="relative">
         <canvas
           ref={canvasRef}
-          width={W} height={H}
-          className="block rounded-2xl border border-slate-700/50 touch-none"
-          style={{ maxHeight: 'calc(100svh - 120px)', width: 'auto', boxShadow: '0 0 48px #0a1e36' }}
-          onMouseMove={e => toXY(e.clientX, e.clientY)}
-          onTouchMove={e => { e.preventDefault(); toXY(e.touches[0].clientX, e.touches[0].clientY); }}
+          onMouseMove={handlePointerMove}
+          onTouchMove={handlePointerMove}
+          className="block w-full h-full border-[10px] border-slate-900 border-b-red-500 rounded-xl box-border touch-none"
         />
 
-        {/* helper label */}
-        {phase === 'PLAYING' && helperLabel && (
-          <div className="absolute top-3 inset-x-0 flex justify-center pointer-events-none">
-            <div className="bg-slate-900/85 text-yellow-300 text-xs font-bold px-3 py-1.5 rounded-full border border-yellow-500/30">
-              {helperLabel}
-            </div>
+        {/* HUD */}
+        <div className="absolute inset-0 pointer-events-none flex flex-col justify-between p-5 box-border">
+          <div className="flex justify-between text-2xl font-bold text-slate-900 drop-shadow-md">
+            <span>ניקוד: {score}</span>
+            <span>חיים: {'❤️'.repeat(lives)}</span>
           </div>
-        )}
-
-        {/* interim */}
-        {phase === 'PLAYING' && speech.interim && (
-          <div className="absolute bottom-4 inset-x-0 flex justify-center pointer-events-none">
-            <div className="bg-slate-900/85 text-slate-300 text-sm px-3 py-1.5 rounded-full border border-slate-600/40 italic">
-              {speech.interim}
+          <div className="absolute top-16 right-5 text-right">
+            <div className={`text-lg px-3 py-1 rounded-full bg-slate-900/70 transition-colors ${isListening ? 'text-green-400' : 'text-white'}`}>
+              {micStatusText}
             </div>
+            {gameState === 'playing' && (
+              <div className="mt-2 text-lg bg-black/60 text-amber-300 px-3 py-1 rounded-lg">
+                {lastHeard}
+              </div>
+            )}
           </div>
-        )}
+        </div>
 
-        {/* ── MENU ── */}
-        {phase === 'MENU' && (
-          <div className="absolute inset-0 rounded-2xl bg-slate-950/90 flex flex-col items-center justify-center gap-5 px-6">
-            <div className="text-6xl">🏒</div>
-            <div className="text-center">
-              <h1 className="text-3xl font-black text-white mb-1">הוקי אוויר</h1>
-              <p className="text-slate-400 text-sm">יונתן</p>
-            </div>
-            <p className="text-slate-400 text-sm text-center leading-relaxed px-2">
-              הזז את הכן עם העכבר או מגע.<br/>
-              כשפאק מופיע — תרגם בקול כדי לפתוח,<br/>
-              ואז שגר אותו לשער העליון!
-            </p>
-            {!speech.isSupported && (
-              <p className="text-amber-400 text-xs text-center bg-amber-900/20 border border-amber-700/30 rounded-xl px-4 py-2">
-                ⚠️ זיהוי קול דורש Chrome
-              </p>
-            )}
-            <button
-              onClick={startGame}
-              className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:brightness-110 text-white font-black text-xl py-4 rounded-2xl transition-all active:scale-95 shadow-lg shadow-orange-900/40"
-            >
-              התחל!
-            </button>
-            {leaderboard.length > 0 && (
-              <button onClick={() => setShowLeader(v => !v)} className="flex items-center gap-2 text-slate-400 hover:text-yellow-400 text-sm transition-colors">
-                <Trophy size={15}/>
-                טבלת שיאים
-              </button>
-            )}
-            {showLeader && (
-              <div className="w-full bg-slate-900/80 border border-slate-700/40 rounded-xl p-3">
-                <p className="text-yellow-400 font-bold text-sm text-center mb-2">🏆 שיאים</p>
-                {leaderboard.slice(0, 5).map((e, i) => (
-                  <div key={i} className="flex justify-between text-xs py-1 border-b border-slate-800 last:border-0">
-                    <span className="text-slate-300">{i + 1}. {e.name}</span>
-                    <span className="text-yellow-400 font-bold">{e.score.toLocaleString()}</span>
+        {/* Overlay menus */}
+        {gameState !== 'playing' && (
+          <div className="absolute inset-0 bg-slate-900/90 backdrop-blur-sm flex flex-col justify-center items-center pointer-events-auto z-10 p-6 text-center">
+
+            {gameState === 'start' && (
+              <>
+                <h1 className="text-5xl font-bold text-sky-400 drop-shadow-[0_0_10px_rgba(56,189,248,0.5)] mb-4">הוקי אוויר חכם</h1>
+                <p className="text-xl mb-8">אתה השוער. הגן על השער!<br/>תרגם מילים בין אנגלית לעברית כדי להדוף דיסקיות.</p>
+                {leaderboard.length > 0 && (
+                  <div className="bg-black/40 p-4 rounded-lg w-full max-w-xs mb-6">
+                    <h2 className="text-amber-300 text-xl font-bold mb-3">טבלת מובילים</h2>
+                    <ol className="text-lg text-right list-decimal list-inside space-y-1">
+                      {leaderboard.slice(0, 5).map((entry, idx) => (
+                        <li key={idx} className="border-b border-white/10 pb-1">{entry.name} - {entry.score} נק'</li>
+                      ))}
+                    </ol>
                   </div>
-                ))}
-              </div>
+                )}
+                <button onClick={startGame} className="px-8 py-3 bg-sky-400 text-slate-900 font-bold text-2xl rounded-full hover:scale-105 hover:bg-sky-300 transition-all shadow-lg shadow-sky-400/40">
+                  התחל משחק
+                </button>
+              </>
             )}
-          </div>
-        )}
 
-        {/* ── GAME OVER ── */}
-        {phase === 'GAME_OVER' && (
-          <div className="absolute inset-0 rounded-2xl bg-slate-950/92 flex flex-col items-center justify-center gap-4 px-6">
-            <div className="text-5xl">💀</div>
-            <h2 className="text-3xl font-black text-white">נגמרו החיים!</h2>
-            <p className="text-2xl font-black text-yellow-400">{gameRef.current.score.toLocaleString()} נק׳</p>
-            {!showLeader ? (
-              <div className="w-full flex flex-col gap-3">
-                <input
-                  type="text" dir="rtl" value={nameInput}
-                  onChange={e => setNameInput(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && saveScore()}
-                  placeholder="שם לשיאים..."
-                  className="w-full bg-slate-800 border border-slate-600 focus:border-yellow-400 text-white text-center text-lg font-bold rounded-xl px-4 py-3 outline-none transition-colors placeholder-slate-600"
-                  autoFocus
-                />
-                <button onClick={saveScore} disabled={!nameInput.trim()}
-                  className="w-full bg-yellow-500 hover:bg-yellow-400 disabled:opacity-40 text-slate-900 font-black py-3 rounded-xl transition-all">
-                  שמור שיא
-                </button>
-                <button onClick={() => setPhase('MENU')} className="text-slate-500 hover:text-slate-300 text-sm transition-colors">
-                  דלג
-                </button>
-              </div>
-            ) : (
-              <div className="w-full bg-slate-900/80 border border-slate-700/40 rounded-xl p-3">
-                <p className="text-yellow-400 font-bold text-sm text-center mb-2">🏆 שיאים</p>
-                {leaderboard.slice(0, 5).map((e, i) => (
-                  <div key={i} className="flex justify-between text-xs py-1 border-b border-slate-800 last:border-0">
-                    <span className="text-slate-300">{i + 1}. {e.name}</span>
-                    <span className="text-yellow-400 font-bold">{e.score.toLocaleString()}</span>
-                  </div>
-                ))}
-              </div>
+            {gameState === 'gameover' && (
+              <>
+                <h1 className="text-5xl font-bold text-red-500 mb-4">המשחק נגמר!</h1>
+                <p className="text-xl mb-6">השגת <b>{Math.floor(scoreRef.current / 10)}</b> נקודות.</p>
+                <div className="flex flex-col items-center w-full max-w-xs">
+                  <input
+                    type="text" value={playerName}
+                    onChange={e => setPlayerName(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleSaveScore()}
+                    placeholder="הכנס את שמך"
+                    className="w-full p-3 text-xl text-center text-slate-900 rounded-xl mb-4 border-none outline-none"
+                    autoFocus
+                  />
+                  <button onClick={handleSaveScore} className="px-6 py-2 bg-sky-400 text-slate-900 font-bold text-xl rounded-full hover:scale-105 hover:bg-sky-300 transition-all">
+                    שמור וצפה בטבלה
+                  </button>
+                </div>
+              </>
             )}
-            <button onClick={startGame}
-              className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:brightness-110 text-white font-black text-lg py-3 rounded-2xl transition-all active:scale-95">
-              שחק שוב
-            </button>
           </div>
         )}
       </div>
