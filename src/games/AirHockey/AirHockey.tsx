@@ -243,9 +243,10 @@ export function AirHockey() {
     if (scoreRef.current % 10 === 0) setScore(Math.floor(scoreRef.current / 10));
     if (pucksRef.current.length === 0) spawn();
 
+    const slowmo = speechRef.current.interim ? 0.3 : 1;
     for (let i = pucksRef.current.length - 1; i >= 0; i--) {
       const p = pucksRef.current[i];
-      p.x += p.vx; p.y += p.vy;
+      p.x += p.vx * slowmo; p.y += p.vy * slowmo;
 
       if (p.x - p.radius <= 0)  { p.x = p.radius;   p.vx =  Math.abs(p.vx); }
       if (p.x + p.radius >= W)  { p.x = W-p.radius;  p.vx = -Math.abs(p.vx); }
