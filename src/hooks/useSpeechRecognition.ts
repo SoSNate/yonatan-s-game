@@ -124,10 +124,11 @@ export function useSpeechRecognition(initialLang: Lang = 'he-IL'): SpeechHook {
   }, []);
 
   const switchLang = useCallback((lang: Lang) => {
+    if (langRef.current === lang) return;
     langRef.current = lang;
-    if (shouldListenRef.current) {
-      try { recognitionRef.current?.stop(); } catch (_) {}
-    }
+    // Don't stop — the current recognition session will still match
+    // whichever language the user speaks (Hebrew/English are distinguishable).
+    // Language preference applies to the NEXT natural restart via onend.
   }, []);
 
   useEffect(() => () => {

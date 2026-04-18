@@ -136,6 +136,8 @@ export function AirHockey() {
 
   // ── FIX 1: use the existing hook ───────────────────────────────────────────
   const speech = useSpeechRecognition('he-IL');
+  const speechRef = useRef(speech);
+  speechRef.current = speech;
 
   const canvasRef    = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -208,7 +210,7 @@ export function AirHockey() {
     const ang  = (Math.random() * 110 + 35) * (Math.PI / 180);
     const word = WORDS[Math.floor(Math.random() * WORDS.length)];
     const e2h  = Math.random() > .5;
-    speech.switchLang(e2h ? 'he-IL' : 'en-US');
+    speechRef.current.switchLang(e2h ? 'he-IL' : 'en-US');
     pucksRef.current.push({
       x: r + Math.random() * (W - r * 2),
       y: r + 10,
@@ -220,15 +222,15 @@ export function AirHockey() {
       helperText:    e2h ? ':עברית' : 'English:',
       isHittable: false, glowT: 0,
     });
-  }, [speech]);
+  }, []);
 
   // ── physics ────────────────────────────────────────────────────────────────
   const endGame = useCallback(() => {
     playRef.current = false;
     cancelAnimationFrame(rafRef.current);
-    speech.stop();
+    speechRef.current.stop();
     setGameState('gameover');
-  }, [speech]);
+  }, []);
 
   const physics = useCallback(() => {
     const cv = canvasRef.current; if (!cv) return;
@@ -325,7 +327,7 @@ export function AirHockey() {
     return () => obs.disconnect();
   }, [resizeCanvas]);
 
-  useEffect(() => () => { cancelAnimationFrame(rafRef.current); speech.stop(); }, [speech]);
+  useEffect(() => () => { cancelAnimationFrame(rafRef.current); speechRef.current.stop(); }, []);
 
   // ── start ──────────────────────────────────────────────────────────────────
   const startGame = useCallback((diff: Difficulty) => {
@@ -343,11 +345,11 @@ export function AirHockey() {
       const pl = playerRef.current;
       pl.x = cv.width / 2;
       pl.y = cv.height - pl.radius - 14;
-      speech.start(checkWordRef.current);
+      speechRef.current.start(checkWordRef.current);
       spawn();
       rafRef.current = requestAnimationFrame(loop);
     }));
-  }, [resizeCanvas, speech, spawn, loop]);
+  }, [resizeCanvas, spawn, loop]);
 
   // ── pointer handling (unified mouse + touch via Pointer Events) ───────────
   const onPointerMove = useCallback((e: React.PointerEvent) => {
