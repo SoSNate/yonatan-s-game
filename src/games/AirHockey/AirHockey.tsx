@@ -143,23 +143,16 @@ export function AirHockey() {
   const playRef      = useRef(false);
   const diffRef      = useRef<Difficulty>('medium');
 
-  // FIX 2: logical canvas dimensions — ALL physics/draw use these, not cv.width/height
-  const lW = useRef(0);
-  const lH = useRef(0);
-
   const scoreRef  = useRef(0);
   const livesRef  = useRef(5);
   const speedRef  = useRef(1);
   const pucksRef  = useRef<Puck[]>([]);
   const playerRef = useRef({ x: 0, y: 0, radius: 40 });
-  const pausedRef = useRef(false);
-
-  // FIX 4: track a single touch identifier so palm-touches don't warp paddle
-  const touchIdRef = useRef<number | null>(null);
 
   // ── speech result handler ──────────────────────────────────────────────────
+  const checkWordRef = useRef<(t: string) => void>(() => {});
   const checkWord = useCallback((transcript: string) => {
-    if (!playRef.current || pausedRef.current) return;
+    if (!playRef.current) return;
     const s = transcript.replace(/[.,!?؟]/g,'').trim().toLowerCase();
     let hit = false;
     pucksRef.current.forEach(p => {
@@ -170,19 +163,19 @@ export function AirHockey() {
     });
     if (hit) {
       setLastHeard(transcript); setHeardOk(true);
-      pausedRef.current = true;
-      setTimeout(() => { pausedRef.current = false; setHeardOk(false); setLastHeard(''); }, 900);
+      setTimeout(() => { setHeardOk(false); setLastHeard(''); }, 900);
     } else {
       setLastHeard(transcript);
       setTimeout(() => setLastHeard(''), 1200);
     }
   }, []);
+  checkWordRef.current = checkWord;
 
   // ── draw ───────────────────────────────────────────────────────────────────
   const draw = useCallback(() => {
     const cv = canvasRef.current; if (!cv) return;
     const ctx = cv.getContext('2d')!;
-    const W = lW.current, H = lH.current;
+    const W = cv.width, H = cv.height;
     if (!W || !H) return;
 
     drawField(ctx, W, H);
@@ -205,12 +198,12 @@ export function AirHockey() {
 
   // ── spawn ──────────────────────────────────────────────────────────────────
   const spawn = useCallback(() => {
-    const W = lW.current, H = lH.current;
-    if (!W || !H) return;
+    const cv = canvasRef.current; if (!cv) return;
+    const W = cv.width;
+    if (!W) return;
     const cfg  = DIFF[diffRef.current];
     const mob  = isMob() ? 0.6 : 1.0;
-    // radius: readable but not oversized — 9% of canvas width, min 38px mobile / 32px desktop
-    const r    = Math.max(isMob() ? 38 : 32, W * 0.09);
+    const r    = Math.max(45, W * 0.13);
     const spd  = cfg.base * mob * speedRef.current + Math.random() * cfg.base * .4 * mob;
     const ang  = (Math.random() * 110 + 35) * (Math.PI / 180);
     const word = WORDS[Math.floor(Math.random() * WORDS.length)];
@@ -238,7 +231,8 @@ export function AirHockey() {
   }, [speech]);
 
   const physics = useCallback(() => {
-    const W = lW.current, H = lH.current;
+    const cv = canvasRef.current; if (!cv) return;
+    const W = cv.width, H = cv.height;
     if (!W || !H) return;
     const cfg = DIFF[diffRef.current];
     const mob = isMob() ? 0.6 : 1.0;
@@ -273,24 +267,18 @@ export function AirHockey() {
         continue;
       }
 
-      // FIX 5: clean reflection — only when hittable AND puck moving toward paddle
-      if (!p.isHittable) continue;
       const pl = playerRef.current;
       const dx = p.x - pl.x, dy = p.y - pl.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
       const minD = p.radius + pl.radius;
       if (dist < minD && dist > 0.001) {
-        // push puck out of overlap
         const nx = dx / dist, ny = dy / dist;
-        p.x += nx * (minD - dist);
-        p.y += ny * (minD - dist);
-        // reflect only if puck is moving toward the paddle center
-        const dot = p.vx * nx + p.vy * ny;
-        if (dot < 0) {
-          const boost = 1.07;
-          p.vx = (p.vx - 2 * dot * nx) * boost;
-          p.vy = (p.vy - 2 * dot * ny) * boost;
-        }
+        p.x = pl.x + nx * minD;
+        p.y = pl.y + ny * minD;
+        const spd = Math.hypot(p.vx, p.vy);
+        p.vx = nx * spd * 1.05;
+        p.vy = -Math.abs(ny * spd * 1.05);
+        if (Math.abs(p.vy) < 1) p.vy = -2;
       }
     }
   }, [spawn, endGame]);
@@ -302,48 +290,34 @@ export function AirHockey() {
     rafRef.current = requestAnimationFrame(loop);
   }, [physics, draw]);
 
-  // ── FIX 3: ResizeObserver for canvas sizing (handles mobile address-bar) ──
+  // ── ResizeObserver for canvas sizing ──
   const resizeCanvas = useCallback(() => {
     const cv  = canvasRef.current;
     const con = containerRef.current;
     if (!cv || !con) return;
-    const dpr  = window.devicePixelRatio || 1;
-    const conW = con.clientWidth;
-    const conH = con.clientHeight;
-    const logW = isMob() ? conW : Math.min(conW, 500);
-    const logH = conH;
-
-    lW.current = logW;
-    lH.current = logH;
-
-    cv.width  = Math.round(logW * dpr);
-    cv.height = Math.round(logH * dpr);
-    cv.style.width  = logW + 'px';
-    cv.style.height = logH + 'px';
-    cv.style.position = 'absolute';
-    cv.style.left = Math.round((conW - logW) / 2) + 'px';
-    cv.style.top  = '0';
-
-    const ctx = cv.getContext('2d')!;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const w = con.clientWidth;
+    const h = con.clientHeight;
+    if (!w || !h) return;
+    cv.width  = w;
+    cv.height = h;
 
     const pl = playerRef.current;
-    pl.radius = Math.round(Math.max(isMob() ? 36 : 30, logW * 0.085));
+    pl.radius = Math.max(40, w * 0.09);
     if (playRef.current) {
-      pl.x = Math.min(Math.max(pl.x, pl.radius), logW - pl.radius);
-      pl.y = Math.max(logH * 0.5, Math.min(logH - pl.radius, pl.y));
+      pl.x = Math.min(Math.max(pl.x, pl.radius), w - pl.radius);
+      pl.y = Math.max(h * 0.5, Math.min(h - pl.radius, pl.y));
     } else {
-      pl.x = logW / 2;
-      pl.y = logH - pl.radius - 14;
+      pl.x = w / 2;
+      pl.y = h - pl.radius - 14;
     }
   }, []);
 
   useEffect(() => {
     const con = containerRef.current;
     if (!con) return;
-    const obs = new ResizeObserver(() => resizeCanvas());  // FIX 3
+    const obs = new ResizeObserver(() => resizeCanvas());
     obs.observe(con);
-    resizeCanvas();
+    requestAnimationFrame(() => resizeCanvas());
     return () => obs.disconnect();
   }, [resizeCanvas]);
 
@@ -353,68 +327,35 @@ export function AirHockey() {
   const startGame = useCallback((diff: Difficulty) => {
     diffRef.current = diff;
     scoreRef.current = 0; livesRef.current = 5; speedRef.current = 1;
-    pucksRef.current = []; pausedRef.current = false; touchIdRef.current = null;
+    pucksRef.current = [];
     setScore(0); setLives(5); setLastHeard(''); setHeardOk(false);
     setGameState('playing');
     playRef.current = true;
 
-    resizeCanvas();
-    const pl = playerRef.current;
-    pl.x = lW.current / 2;
-    pl.y = lH.current - pl.radius - 14;
+    // Wait one frame so the canvas container has layout dimensions before sizing.
+    requestAnimationFrame(() => {
+      resizeCanvas();
+      const cv = canvasRef.current; if (!cv) return;
+      const pl = playerRef.current;
+      pl.x = cv.width / 2;
+      pl.y = cv.height - pl.radius - 14;
+      speech.start(checkWordRef.current);
+      spawn();
+      rafRef.current = requestAnimationFrame(loop);
+    });
+  }, [resizeCanvas, speech, spawn, loop]);
 
-    speech.start(checkWord);
-    spawn();
-    rafRef.current = requestAnimationFrame(loop);
-  }, [resizeCanvas, speech, checkWord, spawn, loop]);
-
-  // ── FIX 4: pointer / touch with identifier tracking ───────────────────────
-  const movePaddle = useCallback((cx: number, cy: number) => {
+  // ── pointer handling (unified mouse + touch via Pointer Events) ───────────
+  const onPointerMove = useCallback((e: React.PointerEvent) => {
     if (!playRef.current || !canvasRef.current) return;
     const cv   = canvasRef.current;
     const rect = cv.getBoundingClientRect();
-    const W    = lW.current, H = lH.current;
+    const W    = cv.width, H = cv.height;
     const pl   = playerRef.current;
-    const rx   = (cx - rect.left) * (W / rect.width);
-    const ry   = (cy - rect.top)  * (H / rect.height);
+    const rx   = (e.clientX - rect.left) * (W / rect.width);
+    const ry   = (e.clientY - rect.top)  * (H / rect.height);
     pl.x = Math.max(pl.radius, Math.min(W - pl.radius, rx));
     pl.y = Math.max(H * 0.5,   Math.min(H - pl.radius, ry));
-  }, []);
-
-  const onMouseMove = useCallback((e: React.MouseEvent) => {
-    movePaddle(e.clientX, e.clientY);
-  }, [movePaddle]);
-
-  const onTouchStart = useCallback((e: React.TouchEvent) => {
-    if (touchIdRef.current === null) {
-      const t = e.changedTouches[0];
-      touchIdRef.current = t.identifier;
-      movePaddle(t.clientX, t.clientY);
-    }
-  }, [movePaddle]);
-
-  const onTouchMove = useCallback((e: React.TouchEvent) => {
-    for (let i = 0; i < e.changedTouches.length; i++) {
-      if (e.changedTouches[i].identifier === touchIdRef.current) {
-        movePaddle(e.changedTouches[i].clientX, e.changedTouches[i].clientY);
-        break;
-      }
-    }
-  }, [movePaddle]);
-
-  const onTouchEnd = useCallback((e: React.TouchEvent) => {
-    for (let i = 0; i < e.changedTouches.length; i++) {
-      if (e.changedTouches[i].identifier === touchIdRef.current) {
-        touchIdRef.current = null;
-        break;
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    const p = (e: TouchEvent) => { if (playRef.current) e.preventDefault(); };
-    document.body.addEventListener('touchmove', p, { passive: false });
-    return () => document.body.removeEventListener('touchmove', p);
   }, []);
 
   // ── save ───────────────────────────────────────────────────────────────────
@@ -466,14 +407,12 @@ export function AirHockey() {
       </div>
 
       {/* ── Canvas container ── */}
-      <div ref={containerRef} className="flex-1 relative" style={{ minHeight: 0 }}>
+      <div className="flex-1 w-full flex justify-center" style={{ minHeight: 0 }}>
+      <div ref={containerRef} className="relative w-full max-w-[600px] h-full">
         <canvas
           ref={canvasRef}
-          className="block touch-none"
-          onMouseMove={onMouseMove}
-          onTouchStart={onTouchStart}
-          onTouchMove={onTouchMove}
-          onTouchEnd={onTouchEnd}
+          className="block w-full h-full touch-none"
+          onPointerMove={onPointerMove}
         />
 
         {/* heard bubble */}
@@ -648,6 +587,7 @@ export function AirHockey() {
             </div>
           </div>
         )}
+      </div>
       </div>
     </div>
   );
