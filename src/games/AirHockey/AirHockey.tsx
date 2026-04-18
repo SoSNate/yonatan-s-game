@@ -284,8 +284,11 @@ export function AirHockey() {
   }, [spawn, endGame]);
 
   // ── game loop ──────────────────────────────────────────────────────────────
+  const resizeRef = useRef<() => void>(() => {});
   const loop = useCallback(() => {
     if (!playRef.current) return;
+    const cv = canvasRef.current;
+    if (cv && (!cv.width || !cv.height)) resizeRef.current();
     physics(); draw();
     rafRef.current = requestAnimationFrame(loop);
   }, [physics, draw]);
@@ -311,6 +314,7 @@ export function AirHockey() {
       pl.y = h - pl.radius - 14;
     }
   }, []);
+  resizeRef.current = resizeCanvas;
 
   useEffect(() => {
     const con = containerRef.current;
@@ -332,17 +336,17 @@ export function AirHockey() {
     setGameState('playing');
     playRef.current = true;
 
-    // Wait one frame so the canvas container has layout dimensions before sizing.
-    requestAnimationFrame(() => {
+    // Wait two frames so HUD height transition + layout are resolved before sizing.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
       resizeCanvas();
-      const cv = canvasRef.current; if (!cv) return;
+      const cv = canvasRef.current; if (!cv || !cv.width || !cv.height) return;
       const pl = playerRef.current;
       pl.x = cv.width / 2;
       pl.y = cv.height - pl.radius - 14;
       speech.start(checkWordRef.current);
       spawn();
       rafRef.current = requestAnimationFrame(loop);
-    });
+    }));
   }, [resizeCanvas, speech, spawn, loop]);
 
   // ── pointer handling (unified mouse + touch via Pointer Events) ───────────
@@ -383,7 +387,7 @@ export function AirHockey() {
       {/* ── HUD ── */}
       <div
         className="flex-shrink-0 flex items-center justify-between px-4"
-        style={{ height: gameState === 'playing' ? 52 : 0, overflow: 'hidden', transition: 'height .25s' }}
+        style={{ height: gameState === 'playing' ? 52 : 0, overflow: 'hidden' }}
       >
         <span className="text-cyan-400 font-black text-base tabular-nums"
               style={{ textShadow: '0 0 10px #00d4ff' }}>
@@ -407,11 +411,15 @@ export function AirHockey() {
       </div>
 
       {/* ── Canvas container ── */}
-      <div className="flex-1 w-full flex justify-center" style={{ minHeight: 0 }}>
-      <div ref={containerRef} className="relative w-full max-w-[600px] h-full">
+      <div
+        ref={containerRef}
+        className="flex-1 w-full max-w-[600px] mx-auto relative"
+        style={{ minHeight: 0 }}
+      >
         <canvas
           ref={canvasRef}
-          className="block w-full h-full touch-none"
+          className="block touch-none"
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
           onPointerMove={onPointerMove}
         />
 
@@ -587,7 +595,6 @@ export function AirHockey() {
             </div>
           </div>
         )}
-      </div>
       </div>
     </div>
   );
